@@ -7,6 +7,9 @@ This allows you to link against shim versions of these syscalls, and rapidly str
 
 Tests can be made entirely deterministic, or iteratively loop over an infinite amount of data.
 
+## Data consumption
+Data is passed with function us_fuzzer_set_data(data, length) and a callback for data exhaustion can be set with us_fuzzer_on_data_exhaustion(cb), so that graceful shutdown after consuming all data can be done.
+
 ## In practise
 
 test.cpp:
