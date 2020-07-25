@@ -7,21 +7,26 @@ libEpollFuzzer implements the Linux epoll syscalls atop libFuzzer. This allows y
 
 Tests can be made entirely deterministic, or iteratively loop over an infinite amount of data.
 
-## Data consumption?
-Data is passed with function us_fuzzer_set_data(data, length) and a callback for data exhaustion can be set with us_fuzzer_on_data_exhaustion(cb), so that graceful shutdown after consuming all data can be done.
-
 ## In practise
 
 test.cpp:
 ```c++
 #include "epoll_fuzzer.h"
 
-void test() {
+void setup(void *user) {
+  // set up userdata
+}
+
+void test(void *user) {
   // run your server here, listen and start the event-loop
 }
 
+void teardown(void *user) {
+  // shutdown whatever you established in setup or test
+}
+
 // register this deterministic test case
-epoll_fuzzer_deterministic_case(test);
+epoll_fuzzer_deterministic_case(setup, test, teardown);
 ```
 
 Compile it as an LLVM fuzzing case.
