@@ -25,7 +25,7 @@ int length = recv(buf, 24234234);
 gif here of finding the bug
 
 ## A more complex case
-Fuzzing the entire uSockets library takes no more than a few linker flags.
+Fuzzing the entire uSockets library takes no more than a few linker flags. Other libraries that may benefit from fuzzing include libuv, libev, libevent, ASIO and the like.
 
 ## How it works
 
