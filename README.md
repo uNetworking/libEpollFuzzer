@@ -1,6 +1,6 @@
 # libEpollFuzzer - fuzzing for Linux servers
 
-This mock implementation of the [epoll/socket](https://en.wikipedia.org/wiki/Epoll) syscalls allows you to test intricate edge cases and find bugs in mission critical software - all within minutes. It builds on LLVM's [libFuzzer](http://llvm.org/docs/LibFuzzer.html) and operates based on nothing but fuzz data, being entirely deterministic and thus reproducible.
+This mock implementation of the [epoll/socket](https://en.wikipedia.org/wiki/Epoll) syscalls allows you to test intricate edge cases and find bugs in mission critical software - all within minutes. It builds on LLVM's [libFuzzer](http://llvm.org/docs/LibFuzzer.html) and operates based on nothing but fuzz data, being entirely deterministic and reproducible.
 
 <div align="center">
 <img src="epollFuzzer.svg" height="200" />
