@@ -24,9 +24,12 @@ int length = recv(buf, 24234234);
 //copy from 0 and length
 ```
 
-## Demo
+## Let's find it!
 
 gif here of finding the bug
 
 ## A more complex case
 Fuzzing the entire uSockets library takes no more than a few linker flags.
+
+## How it works
+
