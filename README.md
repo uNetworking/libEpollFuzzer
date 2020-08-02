@@ -29,6 +29,10 @@ Fuzzing the entire uSockets library takes no more than a few linker flags.
 
 ## How it works
 
+Any user space process will communicate with the kernel via syscalls. While possible for the kernel to trigger user space signals, these are typically not used to communicate data. Instead the user space process will "pull" events in batches from the kernel in "event-loop iterations". This by calling the potentially blocking syscall epoll_wait. When the kernel resumes user space execution, the process will continue to process the events and run callbacks/co-routines as it wishes. Data is then "pushed" to kernel space by calls to send, write, etc. This completes the primary input/output cycle.
+
+Linking to libEpollFuzzer, certain syscalls are wrapped at the linker stage. These calls, as made by the server, then run mock variants where fuzz data from libFuzzer is used to control the outcome / result. Because the fuzz data is randomly evolving based on coverage, so does the execution order / behavior of your entire async server. Hence, it is possible to easily uncover edge cases such as the one presented above - cases which might be hard to trigger in real-world use cases or testing.
+
 <div align="center">
 <img src="epollFuzzer.svg" height="200" />
 </div>
