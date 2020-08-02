@@ -2,10 +2,6 @@
 
 This mock implementation of the [epoll/socket](https://en.wikipedia.org/wiki/Epoll) syscalls allows you to test intricate edge cases and find bugs in mission critical software - all within minutes. It builds on LLVM's [libFuzzer](http://llvm.org/docs/LibFuzzer.html) and operates based on nothing but fuzz data, being entirely deterministic and reproducible.
 
-<div align="center">
-<img src="epollFuzzer.svg" height="200" />
-</div>
-
 ## Can you find the bug?
 
 The following code runs fine in most cases but has a critical security bug that can be hard to trigger - can you find it?
@@ -33,3 +29,6 @@ Fuzzing the entire uSockets library takes no more than a few linker flags.
 
 ## How it works
 
+<div align="center">
+<img src="epollFuzzer.svg" height="200" />
+</div>
