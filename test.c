@@ -17,6 +17,10 @@ void post_cb(struct us_loop_t *loop) {
 	//printf("Inside post_cb\n");
 }
 
+void timer_cb(struct us_timer_t *timer) {
+	//exit(33);
+}
+
 struct us_timer_t *timer;
 
 /* We define a test that deterministically sets up and tears down an uSockets event-loop */
@@ -26,6 +30,8 @@ void test() {
 	struct us_loop_t *loop = us_create_loop(0, wakeup_cb, pre_cb, post_cb, 0);
 
 	timer = us_create_timer(loop, 0, 0);
+
+	us_timer_set(timer, timer_cb, 1000, 1000);
 
 	/*struct us_socket_context_options_t context_options = {};
 	struct us_socket_context_t *context = us_create_socket_context(0, loop, 0, context_options);
