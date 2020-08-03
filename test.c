@@ -6,7 +6,7 @@
 
 void wakeup_cb(struct us_loop_t *loop) {
 	printf("EVENTFD TRIGGERED!\n");
-	exit(0);
+	//exit(0);
 }
 
 void pre_cb(struct us_loop_t *loop) {

@@ -5,12 +5,22 @@
 #include <sys/timerfd.h>
 #include <sys/epoll.h>
 
+#define printf
+
 /* The test case */
 void test();
 void teardown();
 
 struct file {
+	/* Every file has a type; socket, event, timer, epoll */
 	int type;
+
+	/* We assume there can only be one event-loop at any given point in time,
+	 * so every file holds its own epoll_event */
+	struct epoll_event epev;
+
+	/* A file may be added to an epfd by linking it in a list */
+	struct file *prev, *next;
 };
 
 /* Map from some collection of integers to a shared extensible struct of data */
@@ -29,6 +39,7 @@ unsigned char *consumable_data;
 int consumable_data_length;
 
 void set_consumable_data(const unsigned char *new_data, int new_length) {
+	printf("Setting consumable length: %d\n", new_length);
 	consumable_data = (unsigned char *) new_data;
 	consumable_data_length = new_length;
 }
@@ -70,19 +81,18 @@ int free_fd(int fd) {
 struct epoll_file {
 	struct file base;
 
-	// we need a list of currently polling-for fds
-	// and what they poll for
-
-	// we can have a linked list of files? slecting a random poll is costly then
-
-	// the moment you CTL_MOD or ADD - then it consumes one byte and puts it in triggered list?
-
-	// linked list of triggered files
-	// linked list of non-triggered files
+	/* A doubly linked list for polls awaiting events */
+	struct file *poll_set_head, *poll_set_tail;
 };
 
+/* This function is O(n) and does not consume any fuzz data, but will fail if run out of FDs */
 int __wrap_epoll_create1(int flags) {
 	struct epoll_file *ef = (struct epoll_file *)malloc(sizeof(struct epoll_file));
+
+	/* Init the epoll_file */
+	//memset(ef->poll_set, 0, 100 * sizeof(struct epoll_event));
+	ef->poll_set_head = NULL;
+	ef->poll_set_tail = NULL;
 
 	int fd = allocate_fd(FD_TYPE_EPOLL, (struct file *)ef);
 
@@ -90,44 +100,102 @@ int __wrap_epoll_create1(int flags) {
 	return fd;
 }
 
+/* This function is O(1) and does not consume any fuzz data */
 int __wrap_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
 	printf("epoll_ctl: 0\n");
+
+	struct epoll_file *ef = (struct epoll_file *)map_fd(epfd);
+
+	// return if bad epfd
+
+	struct file *f = (struct file *)map_fd(fd);
+
+	// return if bad fd
+
+	/* We add new polls in the head */
+	if (op == EPOLL_CTL_ADD) {
+		printf("ADDING FD!\n");
+		// if there is a head already
+		if (ef->poll_set_head) {
+			ef->poll_set_head->prev = f;
+
+			// then it will be our next
+			f->next = ef->poll_set_head;
+		} else {
+			// if there was no head then we became the tail also
+			ef->poll_set_tail = f;
+		}
+
+		// we are now the head in any case
+		ef->poll_set_head = f;
+
+		f->epev = *event;
+
+	} else if (op == EPOLL_CTL_MOD) {
+		/* Modifying is simply changing the file itself */
+		f->epev = *event;
+	} else if (op == EPOLL_CTL_DEL) {
+
+		// let's just clear the whole list for now
+		ef->poll_set_head = NULL;
+		ef->poll_set_tail = NULL;
+
+	}
+
 	return 0;
 }
 
+/* This function is O(n) and consumes fuzz data and might trigger teardown callback */
 int __wrap_epoll_wait(int epfd, struct epoll_event *events,
                int maxevents, int timeout) {
-	printf("epoll_wait: %d\n", 0);
+	//printf("epoll_wait: %d\n", 0);
+
+	struct epoll_file *ef = (struct epoll_file *)map_fd(epfd);
+
+	// return if bad ef
 
 	if (consumable_data_length) {
 
 
-		consumable_data_length=0;
 
 
-
-		// return some triggered fds such as the eventfd one!
-
-
-		// randomly? pick from fds in epoll_ctl-added list
-
-		// hur många ska pickas?
-		// vilka ska pickas?
-
-		// detta är i princip den enda drivande randomnessen som finns! allt annat är relativt givet
+		//printf("ef->poll_set_head: %p\n", ef->poll_set_head);
 
 
+		int ready_events = 0;
+
+		for (struct file *f = ef->poll_set_head; f; f = f->next) {
+
+
+			/* Consume one fuzz byte, AND it with the event */
+			if (!consumable_data_length) {
+				// break if we have no data
+				break;
+			}
+
+			// here we have the main condition that drives everything
+			int ready_event = consumable_data[0] & f->epev.events;
+
+			// consume the byte
+			consumable_data_length--;
+			consumable_data++;
+
+			if (ready_event) {
+				if (ready_events < maxevents) {
+					events[ready_events++] = f->epev;
+				} else {
+					// we are full, break
+					break;
+				}
+			}
+
+		}
+
+		return ready_events;
 
 	} else {
-
 		teardown();
 	}
-
-	// grab 1 byte from consumable data
-
-	// if empty, trigger the teardown callback expecting fallthrough
-
-
 
 	return 0;
 }
@@ -141,6 +209,13 @@ struct socket_file {
 int __wrap_recv() {
 	printf("Wrapped recv\n");
 	return 0;
+}
+
+int __wrap_read() {
+	printf("Wrapped read\n");
+
+	// read is called by the eventfd andexpects 8 bytes, but we should make this more generic
+	return 8;
 }
 
 int __wrap_send() {
@@ -202,6 +277,10 @@ struct timer_file {
 int __wrap_timerfd_create(int clockid, int flags) {
 	struct timer_file *tf = (struct timer_file *)malloc(sizeof(struct timer_file));
 
+	/* Init the file */
+	tf->base.prev = 0;
+	tf->base.next = 0;
+
 	int fd = allocate_fd(FD_TYPE_TIMER, (struct file *)tf);
 
 	//printf("timerfd_create: %d\n", fd);
@@ -226,6 +305,10 @@ int __wrap_eventfd() {
 	//printf("Wrapped eventfd\n");
 
 	struct event_file *ef = (struct event_file *)malloc(sizeof(struct event_file));
+
+	/* Init the file */
+	ef->base.prev = 0;
+	ef->base.next = 0;
 
 	int fd = allocate_fd(FD_TYPE_EVENT, (struct file *)ef);
 
