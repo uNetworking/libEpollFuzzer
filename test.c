@@ -18,7 +18,9 @@ void post_cb(struct us_loop_t *loop) {
 
 struct us_socket_t *on_open(struct us_socket_t *s, int is_client, char *ip, int ip_length) {
 	printf("OPENED A SOCKET!\n");
-	exit(35);
+	//exit(35);
+
+	return s;
 }
 
 struct us_listen_socket_t *listen_socket;

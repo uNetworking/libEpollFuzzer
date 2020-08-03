@@ -50,12 +50,13 @@ void consume_data() {
 
 /* Keeping track of FDs */
 
-int allocate_fd(int type, struct file *f) {
+/* This one should only return the FD or -1, not do any init */
+int allocate_fd(/*int type, struct file *f*/) {
 	// this can be massively optimized by having a list of free blocks or the like
 	for (int fd = 0; fd < MAX_FDS; fd++) {
 		if (!fd_to_file[fd]) {
-			fd_to_file[fd] = f;
-			f->type = type;
+			//fd_to_file[fd] = f;
+			//f->type = type;
 			num_fds++;
 			return fd;
 		}
@@ -63,10 +64,19 @@ int allocate_fd(int type, struct file *f) {
 	return -1;
 }
 
+/* This one should set the actual file for this FD */
+void init_fd(int fd, int type, struct file *f) {
+	fd_to_file[fd] = f;
+	fd_to_file[fd]->type = type;
+	fd_to_file[fd]->next = NULL;
+	fd_to_file[fd]->prev = NULL;
+}
+
 struct file *map_fd(int fd) {
 	return fd_to_file[fd];
 }
 
+/* This one should remove the FD from any pollset by calling epoll_ctl remove */
 int free_fd(int fd) {
 	if (fd_to_file[fd]) {
 		fd_to_file[fd] = 0;
@@ -87,16 +97,19 @@ struct epoll_file {
 
 /* This function is O(n) and does not consume any fuzz data, but will fail if run out of FDs */
 int __wrap_epoll_create1(int flags) {
-	struct epoll_file *ef = (struct epoll_file *)malloc(sizeof(struct epoll_file));
+	/* Todo: check that we do not allocate more than one epoll FD */
+	int fd = allocate_fd();
 
-	/* Init the epoll_file */
-	//memset(ef->poll_set, 0, 100 * sizeof(struct epoll_event));
-	ef->poll_set_head = NULL;
-	ef->poll_set_tail = NULL;
+	if (fd != -1) {
+		struct epoll_file *ef = (struct epoll_file *)malloc(sizeof(struct epoll_file));
 
-	int fd = allocate_fd(FD_TYPE_EPOLL, (struct file *)ef);
+		/* Init the epoll_file */
+		ef->poll_set_head = NULL;
+		ef->poll_set_tail = NULL;
 
-	//printf("epoll_create1: %d\n", fd);
+		init_fd(fd, FD_TYPE_EPOLL, (struct file *)ef);
+	}
+
 	return fd;
 }
 
@@ -142,6 +155,10 @@ int __wrap_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
 		f->epev = *event;
 	} else if (op == EPOLL_CTL_DEL) {
 
+		if (ef->poll_set_head == 0) {
+			printf("Removing from an already empty list\n");
+		}
+
 		// let's just clear the whole list for now
 		ef->poll_set_head = NULL;
 		ef->poll_set_tail = NULL;
@@ -155,6 +172,8 @@ int __wrap_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
 int __wrap_epoll_wait(int epfd, struct epoll_event *events,
                int maxevents, int timeout) {
 	//printf("epoll_wait: %d\n", 0);
+
+	printf("Calling epoll_wait\n");
 
 	struct epoll_file *ef = (struct epoll_file *)map_fd(epfd);
 
@@ -200,6 +219,7 @@ int __wrap_epoll_wait(int epfd, struct epoll_event *events,
 		return ready_events;
 
 	} else {
+		printf("Calling teardown\n");
 		teardown();
 	}
 
@@ -214,14 +234,37 @@ struct socket_file {
 
 int __wrap_recv() {
 	printf("Wrapped recv\n");
+	exit(45); // we never use this one?
 	return 0;
 }
 
-int __wrap_read() {
+int __wrap_read(int fd, void *buf, size_t count) {
 	printf("Wrapped read\n");
 
-	// read is called by the eventfd andexpects 8 bytes, but we should make this more generic
-	return 8;
+
+	struct file *f = map_fd(fd);
+
+	if (!f) {
+		return -1;
+	}
+
+	if (f->type == FD_TYPE_SOCKET) {
+		printf("Reading from a socket!\n");
+
+		return 0;
+	}
+
+	if (f->type == FD_TYPE_EVENT) {
+		printf("Reading from an eventfd!\n");
+
+		return 8;
+	}
+
+	if (f->type == FD_TYPE_TIMER) {
+		printf("Reading from a timer!\n");
+
+		return 8;
+	}
 }
 
 int __wrap_send() {
@@ -282,8 +325,43 @@ int __wrap_freeaddrinfo() {
 }
 
 int __wrap_accept4() {
-	printf("Wrapped accept4\n");
-	return 0;
+	/* We must end with -1 since we are called in a loop */
+
+	/* Read one byte, if it is null then we have a new socket */
+	if (consumable_data_length) {
+
+		int byte = consumable_data[0];
+
+		/* Consume the fuzz byte */
+		consumable_data_length--;
+		consumable_data++;
+
+		/* Okay, so do we have a new connection? */
+		if (!byte) {
+
+			int fd = allocate_fd();
+
+			if (fd != -1) {
+
+				/* Allocate the file */
+				struct socket_file *sf = (struct socket_file *) malloc(sizeof(struct socket_file));
+
+				/* Init the file */
+
+				/* Here we need to create a socket FD and return */
+				init_fd(fd, FD_TYPE_SOCKET, (struct file *)sf);
+
+			}
+
+			printf("accept4 returning fd: %d\n", fd);
+			return fd;
+		} else {
+			return -1;
+		}
+	}
+
+	/* If we have no consumable data we cannot return a socket */
+	return -1;
 }
 
 int __wrap_listen() {
@@ -291,9 +369,19 @@ int __wrap_listen() {
 	return 0;
 }
 
+/* This one is similar to accept4 and has to return a valid FD of type socket */
 int __wrap_socket() {
-	printf("Wrapped socket\n");
-	return 0;
+	int fd = allocate_fd();
+
+	if (fd != -1) {
+		struct socket_file *sf = (struct socket_file *)malloc(sizeof(struct socket_file));
+
+		/* Init the file */
+
+		init_fd(fd, FD_TYPE_SOCKET, (struct file *)sf);
+	}
+
+	return fd;
 }
 
 int __wrap_shutdown() {
@@ -308,15 +396,18 @@ struct timer_file {
 };
 
 int __wrap_timerfd_create(int clockid, int flags) {
-	struct timer_file *tf = (struct timer_file *)malloc(sizeof(struct timer_file));
 
-	/* Init the file */
-	tf->base.prev = 0;
-	tf->base.next = 0;
+	int fd = allocate_fd();
 
-	int fd = allocate_fd(FD_TYPE_TIMER, (struct file *)tf);
+	if (fd != -1) {
+		struct timer_file *tf = (struct timer_file *)malloc(sizeof(struct timer_file));
 
-	//printf("timerfd_create: %d\n", fd);
+		/* Init the file */
+
+
+		init_fd(fd, FD_TYPE_TIMER, (struct file *)tf);
+
+	}
 
 	return fd;
 }
@@ -335,17 +426,18 @@ struct event_file {
 };
 
 int __wrap_eventfd() {
-	//printf("Wrapped eventfd\n");
 
-	struct event_file *ef = (struct event_file *)malloc(sizeof(struct event_file));
+	int fd = allocate_fd();
 
-	/* Init the file */
-	ef->base.prev = 0;
-	ef->base.next = 0;
+	if (fd != -1) {
+		struct event_file *ef = (struct event_file *)malloc(sizeof(struct event_file));
 
-	int fd = allocate_fd(FD_TYPE_EVENT, (struct file *)ef);
+		/* Init the file */
 
-	printf("eventfd: %d\n", fd);
+		init_fd(fd, FD_TYPE_EVENT, (struct file *)ef);
+
+		//printf("eventfd: %d\n", fd);
+	}
 
 	return fd;
 }
@@ -382,9 +474,17 @@ int __wrap_close(int fd) {
 	} else if (f->type == FD_TYPE_SOCKET) {
 		printf("Closing socket\n");
 
+		// we should call epoll_ctl remove here
+
 		free(f);
 
-		return free_fd(fd);
+		int ret = free_fd(fd);
+
+
+		printf("Ret: %d\n", ret);
+
+		//free(-1);
+		return ret;
 	}
 
 	return -1;
