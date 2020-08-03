@@ -27,8 +27,21 @@ void test() {
 
 	timer = us_create_timer(loop, 0, 0);
 
+	/*struct us_socket_context_options_t context_options = {};
+	struct us_socket_context_t *context = us_create_socket_context(0, loop, 0, context_options);
+
+	// listen either succeeds or fails
+	struct us_listen_socket_t *listen_socket = us_socket_context_listen(0, context, 0, 3001, 0, 0);
+
+	if (listen_socket) {
+		us_listen_socket_close(0, listen_socket);
+	} else {
+		printf("Failed to listen!\n");
+	}*/
+
 	us_loop_run(loop);
 
+	//us_socket_context_free(0, context);
 	us_loop_free(loop);
 
 	printf("Leaving test\n");

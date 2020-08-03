@@ -40,6 +40,7 @@ void consume_data() {
 /* Keeping track of FDs */
 
 int allocate_fd(int type, struct file *f) {
+	// this can be massively optimized by having a list of free blocks or the like
 	for (int fd = 0; fd < MAX_FDS; fd++) {
 		if (!fd_to_file[fd]) {
 			fd_to_file[fd] = f;
@@ -71,6 +72,13 @@ struct epoll_file {
 
 	// we need a list of currently polling-for fds
 	// and what they poll for
+
+	// we can have a linked list of files? slecting a random poll is costly then
+
+	// the moment you CTL_MOD or ADD - then it consumes one byte and puts it in triggered list?
+
+	// linked list of triggered files
+	// linked list of non-triggered files
 };
 
 int __wrap_epoll_create1(int flags) {
@@ -137,6 +145,31 @@ int __wrap_recv() {
 
 int __wrap_send() {
 	printf("Wrapped send\n");
+	return 0;
+}
+
+int __wrap_bind() {
+	printf("Wrapped bind\n");
+	return 0;
+}
+
+int __wrap_setsockopt() {
+	printf("Wrapped setsockopt\n");
+	return 0;
+}
+
+int __wrap_fcntl() {
+	printf("Wrapped fcntl\n");
+	return 0;
+}
+
+int __wrap_getaddrinfo() {
+	printf("Wrapped getaddrinfo\n");
+	return 0;
+}
+
+int __wrap_freeaddrinfo() {
+	printf("Wrapped freeaddrinfo\n");
 	return 0;
 }
 

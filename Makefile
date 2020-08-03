@@ -1,2 +1,2 @@
 default:
-	clang -fsanitize=address,fuzzer test.c --for-linker --wrap=epoll_wait --for-linker --wrap=epoll_create1 --for-linker --wrap=timerfd_settime --for-linker --wrap=close --for-linker --wrap=listen --for-linker --wrap=accept4 --for-linker --wrap=eventfd --for-linker --wrap=timerfd_create --for-linker --wrap=epoll_ctl --for-linker --wrap=shutdown -o test uSockets/uSockets.a
+	clang -fsanitize=address,fuzzer test.c -Wl,--wrap=listen,--wrap=getaddrinfo,--wrap=freeaddrinfo,--wrap=setsockopt,--wrap=fcntl,--wrap=bind,--wrap=socket,--wrap=epoll_wait,--wrap=epoll_create1,--wrap=timerfd_settime,--wrap=close,--wrap=accept4,--wrap=eventfd,--wrap=timerfd_create,--wrap=epoll_ctl,--wrap=shutdown -o test uSockets/uSockets.a
