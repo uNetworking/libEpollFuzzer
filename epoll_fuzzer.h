@@ -5,7 +5,7 @@
 #include <sys/timerfd.h>
 #include <sys/epoll.h>
 
-#define printf
+//#define printf
 
 /* The test case */
 void test();
@@ -107,10 +107,16 @@ int __wrap_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
 	struct epoll_file *ef = (struct epoll_file *)map_fd(epfd);
 
 	// return if bad epfd
+	if (!ef) {
+		return -1;
+	}
 
 	struct file *f = (struct file *)map_fd(fd);
 
 	// return if bad fd
+	if (!f) {
+		return -1;
+	}
 
 	/* We add new polls in the head */
 	if (op == EPOLL_CTL_ADD) {
@@ -238,8 +244,35 @@ int __wrap_fcntl() {
 	return 0;
 }
 
-int __wrap_getaddrinfo() {
+  #include <sys/types.h>
+       #include <sys/socket.h>
+       #include <netdb.h>
+
+/* Addrinfo */
+int __wrap_getaddrinfo(const char *node, const char *service,
+                       const struct addrinfo *hints,
+                       struct addrinfo **res) {
 	printf("Wrapped getaddrinfo\n");
+
+
+	// we need to return an addrinfo with family AF_INET6
+
+	static struct addrinfo ai;
+
+	//ai.ai_next = NULL;
+
+	ai.ai_family = AF_INET;//hints->ai_family;
+	ai.ai_flags = hints->ai_flags;
+	ai.ai_socktype = hints->ai_socktype;
+	ai.ai_protocol = hints->ai_protocol;
+
+	ai.ai_addrlen = 4; // fel
+	ai.ai_next = NULL;
+	ai.ai_canonname = "";
+
+	ai.ai_addr = NULL; // ska peka på en sockaddr!
+
+	*res = &ai;
 	return 0;
 }
 
