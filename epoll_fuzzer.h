@@ -5,7 +5,7 @@
 #include <sys/timerfd.h>
 #include <sys/epoll.h>
 
-//#define printf
+#define printf
 
 /* The test case */
 void test();
@@ -113,6 +113,7 @@ int __wrap_epoll_create1(int flags) {
 	return fd;
 }
 
+// this function cannot be called inside an iteration! it changes the list
 /* This function is O(1) and does not consume any fuzz data */
 int __wrap_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
 	printf("epoll_ctl: 0\n");
@@ -155,13 +156,18 @@ int __wrap_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
 		f->epev = *event;
 	} else if (op == EPOLL_CTL_DEL) {
 
-		if (ef->poll_set_head == 0) {
-			printf("Removing from an already empty list\n");
+		if (f->prev) {
+			f->prev->next = f->next;
+		} else {
+			ef->poll_set_head = f->next;
 		}
 
-		// let's just clear the whole list for now
-		ef->poll_set_head = NULL;
-		ef->poll_set_tail = NULL;
+		if (f->next) {
+			f->next->prev = f->prev;
+		} else {
+			// tail ska vara vår.prev
+			ef->poll_set_tail = f->prev;
+		}
 
 	}
 
@@ -207,7 +213,10 @@ int __wrap_epoll_wait(int epfd, struct epoll_event *events,
 
 			if (ready_event) {
 				if (ready_events < maxevents) {
-					events[ready_events++] = f->epev;
+					events[ready_events] = f->epev;
+
+					// todo: the event should be masked by the byte, not everything it wants shold be given all the time!
+					events[ready_events++].events = ready_event;
 				} else {
 					// we are full, break
 					break;
@@ -219,8 +228,46 @@ int __wrap_epoll_wait(int epfd, struct epoll_event *events,
 		return ready_events;
 
 	} else {
+
 		printf("Calling teardown\n");
 		teardown();
+
+		// after shutting down the listen socket we clear the whole list (the bug in epoll_ctl remove)
+		// so the below loop doesn't work - we never close anything more than the listen socket!
+
+		/* You don't really need to emit teardown, you could simply emit error on every poll */
+
+		int ready_events = 0;
+
+		printf("Emitting error on every remaining FD\n");
+		for (struct file *f = ef->poll_set_head; f; f = f->next) {
+
+			if (f->type == FD_TYPE_SOCKET) {
+
+				if (ready_events < maxevents) {
+					events[ready_events] = f->epev;
+
+					// todo: the event should be masked by the byte, not everything it wants shold be given all the time!
+					events[ready_events++].events = EPOLLERR | EPOLLHUP;
+				} else {
+					// we are full, break
+					break;
+				}
+
+			}
+		}
+
+		printf("Ready events: %d\n", ready_events);
+
+		return ready_events;
+
+
+		/* For all FDs still in epoll pollset, emit error! */
+
+		printf("Emitting error on every remaining FD\n");
+		for (struct file *f = ef->poll_set_head; f; f = f->next) {
+
+		}
 	}
 
 	return 0;
@@ -265,6 +312,8 @@ int __wrap_read(int fd, void *buf, size_t count) {
 
 		return 8;
 	}
+
+	return -1;
 }
 
 int __wrap_send() {

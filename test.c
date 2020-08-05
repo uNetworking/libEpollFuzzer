@@ -4,6 +4,8 @@
 /* Our test fuzz uSockets so we need its APIs */
 #include "uSockets/src/libusockets.h"
 
+int num_open_sockets = 0;
+
 void wakeup_cb(struct us_loop_t *loop) {
 
 }
@@ -17,9 +19,12 @@ void post_cb(struct us_loop_t *loop) {
 }
 
 struct us_socket_t *on_open(struct us_socket_t *s, int is_client, char *ip, int ip_length) {
-	printf("OPENED A SOCKET!\n");
-	//exit(35);
+	num_open_sockets++;
+	return s;
+}
 
+struct us_socket_t *on_close(struct us_socket_t *s, int code, void *reason) {
+	num_open_sockets--;
 	return s;
 }
 
@@ -35,6 +40,7 @@ void test() {
 	struct us_socket_context_t *context = us_create_socket_context(0, loop, 0, context_options);
 
 	us_socket_context_on_open(0, context, on_open);
+	us_socket_context_on_close(0, context, on_close);
 
 	listen_socket = us_socket_context_listen(0, context, 0, 3001, 0, 0);
 	if (listen_socket) {
@@ -53,5 +59,16 @@ void test() {
 
 /* Thus function should shutdown the event-loop and let the test fall through */
 void teardown() {
+	/* If we are called twice there's a bug (it potentially could if
+	 * all open sockets cannot be error-closed in one epoll_wait call).
+	 * But we only allow 1k FDs and we have a buffer of 1024 from epoll_wait */
+	if (!listen_socket) {
+		exit(-1);
+	}
+
+	/* We might have open sockets still, and these will be error-closed by epoll_wait */
+	// us_socket_context_close - close all open sockets created with this socket context
+
 	us_listen_socket_close(0, listen_socket);
+	listen_socket = NULL;
 }
