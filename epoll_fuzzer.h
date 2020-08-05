@@ -1,15 +1,27 @@
+/* Welcome to libEpollFuzzer - a mock implementation of the epoll/socket syscalls */
+
+/* Current implementation is extremely experimental and trashy, mind you */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <sys/timerfd.h>
 #include <sys/epoll.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
 
-//#define printf
+//#define PRINTF_DEBUG
 
 /* The test case */
 void test();
 void teardown();
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 struct file {
 	/* Every file has a type; socket, event, timer, epoll */
@@ -39,13 +51,12 @@ unsigned char *consumable_data;
 int consumable_data_length;
 
 void set_consumable_data(const unsigned char *new_data, int new_length) {
+#ifdef PRINTF_DEBUG
 	printf("Setting consumable length: %d\n", new_length);
+#endif
+
 	consumable_data = (unsigned char *) new_data;
 	consumable_data_length = new_length;
-}
-
-void consume_data() {
-
 }
 
 /* Keeping track of FDs */
@@ -97,6 +108,7 @@ struct epoll_file {
 
 /* This function is O(n) and does not consume any fuzz data, but will fail if run out of FDs */
 int __wrap_epoll_create1(int flags) {
+
 	/* Todo: check that we do not allocate more than one epoll FD */
 	int fd = allocate_fd();
 
@@ -110,13 +122,19 @@ int __wrap_epoll_create1(int flags) {
 		init_fd(fd, FD_TYPE_EPOLL, (struct file *)ef);
 	}
 
+#ifdef PRINTF_DEBUG
+	printf("epoll_create1 returning epfd: %d\n", fd);
+#endif
+
 	return fd;
 }
 
 // this function cannot be called inside an iteration! it changes the list
 /* This function is O(1) and does not consume any fuzz data */
 int __wrap_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
-	printf("epoll_ctl: 0\n");
+#ifdef PRINTF_DEBUG
+	printf("epoll_ctl: epfd: %d, fd: %d\n", epfd, fd);
+#endif
 
 	struct epoll_file *ef = (struct epoll_file *)map_fd(epfd);
 
@@ -134,7 +152,9 @@ int __wrap_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
 
 	/* We add new polls in the head */
 	if (op == EPOLL_CTL_ADD) {
+#ifdef PRINTF_DEBUG
 		printf("ADDING FD!\n");
+#endif
 		// if there is a head already
 		if (ef->poll_set_head) {
 			ef->poll_set_head->prev = f;
@@ -179,7 +199,9 @@ int __wrap_epoll_wait(int epfd, struct epoll_event *events,
                int maxevents, int timeout) {
 	//printf("epoll_wait: %d\n", 0);
 
+#ifdef PRINTF_DEBUG
 	printf("Calling epoll_wait\n");
+#endif
 
 	struct epoll_file *ef = (struct epoll_file *)map_fd(epfd);
 
@@ -229,7 +251,9 @@ int __wrap_epoll_wait(int epfd, struct epoll_event *events,
 
 	} else {
 
+#ifdef PRINTF_DEBUG
 		printf("Calling teardown\n");
+#endif
 		teardown();
 
 		// after shutting down the listen socket we clear the whole list (the bug in epoll_ctl remove)
@@ -239,7 +263,9 @@ int __wrap_epoll_wait(int epfd, struct epoll_event *events,
 
 		int ready_events = 0;
 
+#ifdef PRINTF_DEBUG
 		printf("Emitting error on every remaining FD\n");
+#endif
 		for (struct file *f = ef->poll_set_head; f; f = f->next) {
 
 			if (f->type == FD_TYPE_SOCKET) {
@@ -257,14 +283,18 @@ int __wrap_epoll_wait(int epfd, struct epoll_event *events,
 			}
 		}
 
+#ifdef PRINTF_DEBUG
 		printf("Ready events: %d\n", ready_events);
+#endif
 
 		return ready_events;
 
 
 		/* For all FDs still in epoll pollset, emit error! */
 
+#ifdef PRINTF_DEBUG
 		printf("Emitting error on every remaining FD\n");
+#endif
 		for (struct file *f = ef->poll_set_head; f; f = f->next) {
 
 		}
@@ -279,10 +309,10 @@ struct socket_file {
 	struct file base;
 };
 
-#include <string.h>
-
 int __wrap_read(int fd, void *buf, size_t count) {
+#ifdef PRINTF_DEBUG
 	printf("Wrapped read\n");
+#endif
 
 
 	struct file *f = map_fd(fd);
@@ -292,7 +322,7 @@ int __wrap_read(int fd, void *buf, size_t count) {
 	}
 
 	if (f->type == FD_TYPE_SOCKET) {
-		printf("Reading from a socket!\n");
+		//printf("Reading from a socket!\n");
 
 		if (!consumable_data_length) {
 			return 0;
@@ -319,13 +349,13 @@ int __wrap_read(int fd, void *buf, size_t count) {
 	}
 
 	if (f->type == FD_TYPE_EVENT) {
-		printf("Reading from an eventfd!\n");
+		//printf("Reading from an eventfd!\n");
 
 		return 8;
 	}
 
 	if (f->type == FD_TYPE_TIMER) {
-		printf("Reading from a timer!\n");
+		//printf("Reading from a timer!\n");
 
 		return 8;
 	}
@@ -333,39 +363,41 @@ int __wrap_read(int fd, void *buf, size_t count) {
 	return -1;
 }
 
+/* We just ignore the extra flag here */
 int __wrap_recv(int sockfd, void *buf, size_t len, int flags) {
 	return __wrap_read(sockfd, buf, len);
 }
 
-int __wrap_send() {
+int __wrap_send(int sockfd, const void *buf, size_t len, int flags) {
+
+	// send takes the input length scaled by 0-255
+
+	/* Send consumes one byte and takes the input length multiplied by 0-255 of 255 */
+
 	printf("Wrapped send\n");
 	return 0;
 }
 
 int __wrap_bind() {
-	printf("Wrapped bind\n");
+	//printf("Wrapped bind\n");
 	return 0;
 }
 
 int __wrap_setsockopt() {
-	printf("Wrapped setsockopt\n");
+	//printf("Wrapped setsockopt\n");
 	return 0;
 }
 
 int __wrap_fcntl() {
-	printf("Wrapped fcntl\n");
+	//printf("Wrapped fcntl\n");
 	return 0;
 }
-
-  #include <sys/types.h>
-       #include <sys/socket.h>
-       #include <netdb.h>
 
 /* Addrinfo */
 int __wrap_getaddrinfo(const char *node, const char *service,
                        const struct addrinfo *hints,
                        struct addrinfo **res) {
-	printf("Wrapped getaddrinfo\n");
+	//printf("Wrapped getaddrinfo\n");
 
 
 	// we need to return an addrinfo with family AF_INET6
@@ -381,7 +413,7 @@ int __wrap_getaddrinfo(const char *node, const char *service,
 
 	ai.ai_addrlen = 4; // fel
 	ai.ai_next = NULL;
-	ai.ai_canonname = "";
+	ai.ai_canonname = NULL; // fel
 
 	ai.ai_addr = NULL; // ska peka på en sockaddr!
 
@@ -390,17 +422,19 @@ int __wrap_getaddrinfo(const char *node, const char *service,
 }
 
 int __wrap_freeaddrinfo() {
-	printf("Wrapped freeaddrinfo\n");
+	//printf("Wrapped freeaddrinfo\n");
 	return 0;
 }
 
 int __wrap_accept4() {
 	/* We must end with -1 since we are called in a loop */
 
+#ifdef PRINTF_DEBUG
 	if (consumable_data_length < 0) {
 		printf("ACCEPT4 FEL PÅ CONSUMABLE LENGTH!\n");
 		exit(33);
 	}
+#endif
 
 	/* Read one byte, if it is null then we have a new socket */
 	if (consumable_data_length) {
@@ -428,7 +462,9 @@ int __wrap_accept4() {
 
 			}
 
+#ifdef PRINTF_DEBUG
 			printf("accept4 returning fd: %d\n", fd);
+#endif
 			return fd;
 		} else {
 			return -1;
@@ -440,7 +476,7 @@ int __wrap_accept4() {
 }
 
 int __wrap_listen() {
-	printf("Wrapped listen\n");
+	//printf("Wrapped listen\n");
 	return 0;
 }
 
@@ -456,11 +492,15 @@ int __wrap_socket() {
 		init_fd(fd, FD_TYPE_SOCKET, (struct file *)sf);
 	}
 
+#ifdef PRINTF_DEBUG
+	printf("socket returning fd: %d\n", fd);
+#endif
+
 	return fd;
 }
 
 int __wrap_shutdown() {
-	printf("Wrapped shutdown\n");
+	//printf("Wrapped shutdown\n");
 	return 0;
 }
 
@@ -483,6 +523,10 @@ int __wrap_timerfd_create(int clockid, int flags) {
 		init_fd(fd, FD_TYPE_TIMER, (struct file *)tf);
 
 	}
+
+#ifdef PRINTF_DEBUG
+	printf("timerfd_create returning fd: %d\n", fd);
+#endif
 
 	return fd;
 }
@@ -514,6 +558,10 @@ int __wrap_eventfd() {
 		//printf("eventfd: %d\n", fd);
 	}
 
+#ifdef PRINTF_DEBUG
+	printf("eventfd returning fd: %d\n", fd);
+#endif
+
 	return fd;
 }
 
@@ -528,26 +576,34 @@ int __wrap_close(int fd) {
 	}
 
 	if (f->type == FD_TYPE_EPOLL) {
-		printf("Closing epoll FD\n");
+#ifdef PRINTF_DEBUG
+		printf("Closing epoll FD: %d\n", fd);
+#endif
 
 		free(f);
 
 		return free_fd(fd);
 
 	} else if (f->type == FD_TYPE_TIMER) {
-		printf("Closing timer\n");
+#ifdef PRINTF_DEBUG
+		printf("Closing timer fd: %d\n", fd);
+#endif
 
 		free(f);
 
 		return free_fd(fd);
 	} else if (f->type == FD_TYPE_EVENT) {
-		printf("Closing event\n");
+#ifdef PRINTF_DEBUG
+		printf("Closing event fd: %d\n", fd);
+#endif
 
 		free(f);
 
 		return free_fd(fd);
 	} else if (f->type == FD_TYPE_SOCKET) {
-		printf("Closing socket\n");
+#ifdef PRINTF_DEBUG
+		printf("Closing socket fd: %d\n", fd);
+#endif
 
 		// we should call epoll_ctl remove here
 
@@ -555,8 +611,9 @@ int __wrap_close(int fd) {
 
 		int ret = free_fd(fd);
 
-
+#ifdef PRINTF_DEBUG
 		printf("Ret: %d\n", ret);
+#endif
 
 		//free(-1);
 		return ret;
@@ -576,3 +633,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
 	return 0;
 }
+
+#ifdef __cplusplus
+}
+#endif

@@ -40,11 +40,13 @@ struct us_socket_t *on_end(struct us_socket_t *s) {
 
 struct us_listen_socket_t *listen_socket;
 
+#include "App.h"
+
 /* We define a test that deterministically sets up and tears down an uSockets event-loop */
 void test() {
-	printf("Entering test\n");
+	//printf("Entering test\n");
 
-	struct us_loop_t *loop = us_create_loop(0, wakeup_cb, pre_cb, post_cb, 0);
+	/*struct us_loop_t *loop = us_create_loop(0, wakeup_cb, pre_cb, post_cb, 0);
 
 	struct us_socket_context_options_t context_options = {};
 	struct us_socket_context_t *context = us_create_socket_context(0, loop, 0, context_options);
@@ -64,9 +66,66 @@ void test() {
 	us_loop_run(loop);
 
 	us_socket_context_free(0, context);
-	us_loop_free(loop);
+	us_loop_free(loop);*/
 
-	printf("Leaving test\n");
+	// skapa event-loopen explicit?
+	//struct us_loop_t *loop = us_create_loop(0, wakeup_cb, pre_cb, post_cb, 0);
+
+
+	// testing hello world http
+	/*struct us_socket_context_options_t context_options = {};
+	uWS::App(context_options).get("/*", [](auto *res, auto *req) {
+	    res->end("Hello world!");
+	}).listen(3000, [](auto *listenSocket) {
+		listen_socket = listenSocket;
+	}).run();*/
+
+	/* ws->getUserData returns one of these */
+    struct PerSocketData {
+        /* Fill with user data */
+    };
+
+    /* Keep in mind that uWS::SSLApp({options}) is the same as uWS::App() when compiled without SSL support.
+     * You may swap to using uWS:App() if you don't need SSL */
+    uWS::App({
+        /* There are example certificates in uWebSockets.js repo */
+	    .key_file_name = "../misc/key.pem",
+	    .cert_file_name = "../misc/cert.pem",
+	    .passphrase = "1234"
+	}).ws<PerSocketData>("/*", {
+        /* Settings */
+        .compression = uWS::SHARED_COMPRESSOR,
+        .maxPayloadLength = 16 * 1024,
+        .idleTimeout = 10,
+        .maxBackpressure = 1 * 1024 * 1024,
+        /* Handlers */
+        .open = [](auto *ws) {
+            /* Open event here, you may access ws->getUserData() which points to a PerSocketData struct */
+        },
+        .message = [](auto *ws, std::string_view message, uWS::OpCode opCode) {
+            ws->send(message, opCode, true);
+        },
+        .drain = [](auto *ws) {
+            /* Check ws->getBufferedAmount() here */
+        },
+        .ping = [](auto *ws) {
+            /* Not implemented yet */
+        },
+        .pong = [](auto *ws) {
+            /* Not implemented yet */
+        },
+        .close = [](auto *ws, int code, std::string_view message) {
+            /* You may access ws->getUserData() here */
+        }
+    }).listen(9001, [](auto *listenSocket) {
+		listen_socket = listenSocket;
+    }).run();
+
+	uWS::Loop::get()->free();
+
+
+
+	//printf("Leaving test\n");
 }
 
 /* Thus function should shutdown the event-loop and let the test fall through */
