@@ -5,7 +5,7 @@
 #include <sys/timerfd.h>
 #include <sys/epoll.h>
 
-#define printf
+//#define printf
 
 /* The test case */
 void test();
@@ -279,11 +279,7 @@ struct socket_file {
 	struct file base;
 };
 
-int __wrap_recv() {
-	printf("Wrapped recv\n");
-	exit(45); // we never use this one?
-	return 0;
-}
+#include <string.h>
 
 int __wrap_read(int fd, void *buf, size_t count) {
 	printf("Wrapped read\n");
@@ -298,7 +294,28 @@ int __wrap_read(int fd, void *buf, size_t count) {
 	if (f->type == FD_TYPE_SOCKET) {
 		printf("Reading from a socket!\n");
 
-		return 0;
+		if (!consumable_data_length) {
+			return 0;
+		} else {
+			int data_available = (unsigned char) consumable_data[0];
+			consumable_data_length--;
+			consumable_data++;
+
+			if (consumable_data_length < data_available) {
+				data_available = consumable_data_length;
+			}
+
+			if (count < data_available) {
+				data_available = count;
+			}
+
+			memcpy(buf, consumable_data, data_available);
+
+			consumable_data_length -= data_available;
+			consumable_data += data_available;
+
+			return data_available;
+		}
 	}
 
 	if (f->type == FD_TYPE_EVENT) {
@@ -314,6 +331,10 @@ int __wrap_read(int fd, void *buf, size_t count) {
 	}
 
 	return -1;
+}
+
+int __wrap_recv(int sockfd, void *buf, size_t len, int flags) {
+	return __wrap_read(sockfd, buf, len);
 }
 
 int __wrap_send() {
@@ -375,6 +396,11 @@ int __wrap_freeaddrinfo() {
 
 int __wrap_accept4() {
 	/* We must end with -1 since we are called in a loop */
+
+	if (consumable_data_length < 0) {
+		printf("ACCEPT4 FEL PÅ CONSUMABLE LENGTH!\n");
+		exit(33);
+	}
 
 	/* Read one byte, if it is null then we have a new socket */
 	if (consumable_data_length) {

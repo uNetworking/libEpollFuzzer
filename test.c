@@ -28,6 +28,16 @@ struct us_socket_t *on_close(struct us_socket_t *s, int code, void *reason) {
 	return s;
 }
 
+struct us_socket_t *on_data(struct us_socket_t *s, char *data, int length) {
+	//exit(33);
+	return s;
+}
+
+struct us_socket_t *on_end(struct us_socket_t *s) {
+
+	return s;
+}
+
 struct us_listen_socket_t *listen_socket;
 
 /* We define a test that deterministically sets up and tears down an uSockets event-loop */
@@ -41,6 +51,8 @@ void test() {
 
 	us_socket_context_on_open(0, context, on_open);
 	us_socket_context_on_close(0, context, on_close);
+	us_socket_context_on_data(0, context, on_data);
+	us_socket_context_on_end(0, context, on_end);
 
 	listen_socket = us_socket_context_listen(0, context, 0, 3001, 0, 0);
 	if (listen_socket) {
