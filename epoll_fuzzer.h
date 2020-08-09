@@ -12,6 +12,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <errno.h>
 
 //#define PRINTF_DEBUG
 
@@ -51,10 +52,6 @@ unsigned char *consumable_data;
 int consumable_data_length;
 
 void set_consumable_data(const unsigned char *new_data, int new_length) {
-#ifdef PRINTF_DEBUG
-	printf("Setting consumable length: %d\n", new_length);
-#endif
-
 	consumable_data = (unsigned char *) new_data;
 	consumable_data_length = new_length;
 }
@@ -62,12 +59,10 @@ void set_consumable_data(const unsigned char *new_data, int new_length) {
 /* Keeping track of FDs */
 
 /* This one should only return the FD or -1, not do any init */
-int allocate_fd(/*int type, struct file *f*/) {
+int allocate_fd() {
 	// this can be massively optimized by having a list of free blocks or the like
 	for (int fd = 0; fd < MAX_FDS; fd++) {
 		if (!fd_to_file[fd]) {
-			//fd_to_file[fd] = f;
-			//f->type = type;
 			num_fds++;
 			return fd;
 		}
@@ -84,6 +79,9 @@ void init_fd(int fd, int type, struct file *f) {
 }
 
 struct file *map_fd(int fd) {
+	if (fd < 0 || fd >= MAX_FDS) {
+		return NULL;
+	}
 	return fd_to_file[fd];
 }
 
@@ -132,29 +130,19 @@ int __wrap_epoll_create1(int flags) {
 // this function cannot be called inside an iteration! it changes the list
 /* This function is O(1) and does not consume any fuzz data */
 int __wrap_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
-#ifdef PRINTF_DEBUG
-	printf("epoll_ctl: epfd: %d, fd: %d\n", epfd, fd);
-#endif
 
 	struct epoll_file *ef = (struct epoll_file *)map_fd(epfd);
-
-	// return if bad epfd
 	if (!ef) {
 		return -1;
 	}
 
 	struct file *f = (struct file *)map_fd(fd);
-
-	// return if bad fd
 	if (!f) {
 		return -1;
 	}
 
 	/* We add new polls in the head */
 	if (op == EPOLL_CTL_ADD) {
-#ifdef PRINTF_DEBUG
-		printf("ADDING FD!\n");
-#endif
 		// if there is a head already
 		if (ef->poll_set_head) {
 			ef->poll_set_head->prev = f;
@@ -189,7 +177,13 @@ int __wrap_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
 			ef->poll_set_tail = f->prev;
 		}
 
+		// a file that is not in the list should be reset to NULL
+		f->prev = NULL;
+		f->next = NULL;
 	}
+
+	/* You have to poll for errors and hangups */
+	f->epev.events |= EPOLLERR | EPOLLHUP;
 
 	return 0;
 }
@@ -204,16 +198,11 @@ int __wrap_epoll_wait(int epfd, struct epoll_event *events,
 #endif
 
 	struct epoll_file *ef = (struct epoll_file *)map_fd(epfd);
-
-	// return if bad ef
+	if (!ef) {
+		return -1;
+	}
 
 	if (consumable_data_length) {
-
-
-
-
-		//printf("ef->poll_set_head: %p\n", ef->poll_set_head);
-
 
 		int ready_events = 0;
 
@@ -288,19 +277,7 @@ int __wrap_epoll_wait(int epfd, struct epoll_event *events,
 #endif
 
 		return ready_events;
-
-
-		/* For all FDs still in epoll pollset, emit error! */
-
-#ifdef PRINTF_DEBUG
-		printf("Emitting error on every remaining FD\n");
-#endif
-		for (struct file *f = ef->poll_set_head; f; f = f->next) {
-
-		}
 	}
-
-	return 0;
 }
 
 /* The socket syscalls */
@@ -314,18 +291,21 @@ int __wrap_read(int fd, void *buf, size_t count) {
 	printf("Wrapped read\n");
 #endif
 
+	/* Let's try and clear the buffer first */
+	//memset(buf, 0, count);
 
 	struct file *f = map_fd(fd);
-
 	if (!f) {
 		return -1;
 	}
 
+	errno = 0;
+
 	if (f->type == FD_TYPE_SOCKET) {
-		//printf("Reading from a socket!\n");
 
 		if (!consumable_data_length) {
-			return 0;
+			errno = EWOULDBLOCK;
+			return -1;
 		} else {
 			int data_available = (unsigned char) consumable_data[0];
 			consumable_data_length--;
@@ -349,14 +329,12 @@ int __wrap_read(int fd, void *buf, size_t count) {
 	}
 
 	if (f->type == FD_TYPE_EVENT) {
-		//printf("Reading from an eventfd!\n");
-
+		memset(buf, 1, 8);
 		return 8;
 	}
 
 	if (f->type == FD_TYPE_TIMER) {
-		//printf("Reading from a timer!\n");
-
+		memset(buf, 1, 8);
 		return 8;
 	}
 
@@ -370,26 +348,37 @@ int __wrap_recv(int sockfd, void *buf, size_t len, int flags) {
 
 int __wrap_send(int sockfd, const void *buf, size_t len, int flags) {
 
-	// send takes the input length scaled by 0-255
+	if (consumable_data_length) {
+		/* We can send len scaled by the 1 byte */
+		unsigned char scale = consumable_data[0];
+		consumable_data++;
+		consumable_data_length--;
 
-	/* Send consumes one byte and takes the input length multiplied by 0-255 of 255 */
+		int written = float(scale) / 255.0f * len;
 
-	printf("Wrapped send\n");
-	return 0;
+		if (written == 0) {
+			errno = EWOULDBLOCK;
+		} else {
+			errno = 0;
+		}
+
+		printf("Wrote %d of %zu\n", written, len);
+
+		return written;
+	} else {
+		return -1;
+	}
 }
 
 int __wrap_bind() {
-	//printf("Wrapped bind\n");
 	return 0;
 }
 
 int __wrap_setsockopt() {
-	//printf("Wrapped setsockopt\n");
 	return 0;
 }
 
 int __wrap_fcntl() {
-	//printf("Wrapped fcntl\n");
 	return 0;
 }
 
@@ -422,11 +411,10 @@ int __wrap_getaddrinfo(const char *node, const char *service,
 }
 
 int __wrap_freeaddrinfo() {
-	//printf("Wrapped freeaddrinfo\n");
 	return 0;
 }
 
-int __wrap_accept4() {
+int __wrap_accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 	/* We must end with -1 since we are called in a loop */
 
 #ifdef PRINTF_DEBUG
@@ -435,6 +423,14 @@ int __wrap_accept4() {
 		exit(33);
 	}
 #endif
+
+	/* We need to provide an addr */
+	struct sockaddr_in sockaddr = {};
+	sockaddr.sin_family = AF_INET;
+
+	if (addr) {
+		memcpy(addr, &sockaddr, sizeof(sockaddr));
+	}
 
 	/* Read one byte, if it is null then we have a new socket */
 	if (consumable_data_length) {
