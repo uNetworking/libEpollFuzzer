@@ -362,12 +362,15 @@ int __wrap_send(int sockfd, const void *buf, size_t len, int flags) {
 			errno = 0;
 		}
 
-		printf("Wrote %d of %zu\n", written, len);
-
 		return written;
 	} else {
 		return -1;
 	}
+}
+
+int __wrap_sendto(int sockfd, const void *buf, size_t len, int flags,
+	const struct sockaddr *dest_addr, socklen_t addrlen) {
+		return __wrap_send(sockfd, buf, len, flags);
 }
 
 int __wrap_bind() {
