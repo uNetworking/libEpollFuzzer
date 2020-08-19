@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdarg.h>
 
 #include <sys/timerfd.h>
 #include <sys/epoll.h>
@@ -13,6 +14,11 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <errno.h>
+
+/* Currently read, close, fcntl are wrapped to real syscalls */
+
+/* TODO: Our FDs should start at 1024 while actual real FDs should be reserved from 0 to 1023 and passed to actual
+ * real syscalls so that we can co-exist with overlapping syscalls like read, open, write, close */
 
 //#define PRINTF_DEBUG
 
@@ -36,6 +42,10 @@ struct file {
 	struct file *prev, *next;
 };
 
+/* If FD is less than this, it should be passed to REAL syscall.
+ * We never produce FDs lower than this (except for -1 on error) */
+const int RESERVED_SYSTEM_FDS = 1024;
+
 /* Map from some collection of integers to a shared extensible struct of data */
 const int MAX_FDS = 1000;
 struct file *fd_to_file[MAX_FDS];
@@ -58,13 +68,13 @@ void set_consumable_data(const unsigned char *new_data, int new_length) {
 
 /* Keeping track of FDs */
 
-/* This one should only return the FD or -1, not do any init */
+/* Returns -1 on error, or RESERVED_SYSTEM_FDS and above */
 int allocate_fd() {
 	// this can be massively optimized by having a list of free blocks or the like
 	for (int fd = 0; fd < MAX_FDS; fd++) {
 		if (!fd_to_file[fd]) {
 			num_fds++;
-			return fd;
+			return fd + RESERVED_SYSTEM_FDS;
 		}
 	}
 	return -1;
@@ -72,26 +82,31 @@ int allocate_fd() {
 
 /* This one should set the actual file for this FD */
 void init_fd(int fd, int type, struct file *f) {
-	fd_to_file[fd] = f;
-	fd_to_file[fd]->type = type;
-	fd_to_file[fd]->next = NULL;
-	fd_to_file[fd]->prev = NULL;
+	if (fd >= RESERVED_SYSTEM_FDS) {
+		fd_to_file[fd - RESERVED_SYSTEM_FDS] = f;
+		fd_to_file[fd - RESERVED_SYSTEM_FDS]->type = type;
+		fd_to_file[fd - RESERVED_SYSTEM_FDS]->next = NULL;
+		fd_to_file[fd - RESERVED_SYSTEM_FDS]->prev = NULL;
+	}
 }
 
 struct file *map_fd(int fd) {
-	if (fd < 0 || fd >= MAX_FDS) {
-		return NULL;
+	if (fd >= RESERVED_SYSTEM_FDS && fd < MAX_FDS + RESERVED_SYSTEM_FDS) {
+		return fd_to_file[fd - RESERVED_SYSTEM_FDS];
 	}
-	return fd_to_file[fd];
+	return NULL;
 }
 
 /* This one should remove the FD from any pollset by calling epoll_ctl remove */
 int free_fd(int fd) {
-	if (fd_to_file[fd]) {
-		fd_to_file[fd] = 0;
-		num_fds--;
-		return 0;
+	if (fd >= RESERVED_SYSTEM_FDS && fd < MAX_FDS + RESERVED_SYSTEM_FDS) {
+		if (fd_to_file[fd - RESERVED_SYSTEM_FDS]) {
+			fd_to_file[fd - RESERVED_SYSTEM_FDS] = 0;
+			num_fds--;
+			return 0;
+		}
 	}
+
 	return -1;
 }
 
@@ -284,9 +299,19 @@ int __wrap_epoll_wait(int epfd, struct epoll_event *events,
 
 struct socket_file {
 	struct file base;
+
+	/* We store socket addresses created in accept4 */
+	sockaddr_in6 addr;
+	socklen_t len;
 };
 
+extern int __real_read(int fd, void *buf, size_t count);
 int __wrap_read(int fd, void *buf, size_t count) {
+
+	if (fd < RESERVED_SYSTEM_FDS) {
+		return __real_read(fd, buf, count);
+	}
+
 #ifdef PRINTF_DEBUG
 	printf("Wrapped read\n");
 #endif
@@ -381,7 +406,16 @@ int __wrap_setsockopt() {
 	return 0;
 }
 
-int __wrap_fcntl() {
+extern int __real_fcntl(int fd, int cmd, ... /* arg */ );
+int __wrap_fcntl(int fd, int cmd, ... /* arg */) {
+	if (fd < RESERVED_SYSTEM_FDS) {
+		va_list args;
+		va_start(args, cmd);
+		int ret = __real_fcntl(fd, cmd, args);
+		va_end(args);
+		return ret;
+	}
+
 	return 0;
 }
 
@@ -417,6 +451,29 @@ int __wrap_freeaddrinfo() {
 	return 0;
 }
 
+/* This one should return the same address as accept4 did produce */
+int __wrap_getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+
+	struct file *f = map_fd(sockfd);
+	if (!f) {
+		return -1;
+	}
+
+	if (f->type == FD_TYPE_SOCKET) {
+
+		struct socket_file *sf = (struct socket_file *) f;
+
+		if (addr) {
+			memcpy(addr, &sf->addr, sf->len);
+			*addrlen = sf->len;
+		}
+
+		return 0;
+	}
+
+	return -1;
+}
+
 int __wrap_accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 	/* We must end with -1 since we are called in a loop */
 
@@ -426,14 +483,6 @@ int __wrap_accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 		exit(33);
 	}
 #endif
-
-	/* We need to provide an addr */
-	struct sockaddr_in sockaddr = {};
-	sockaddr.sin_family = AF_INET;
-
-	if (addr) {
-		memcpy(addr, &sockaddr, sizeof(sockaddr));
-	}
 
 	/* Read one byte, if it is null then we have a new socket */
 	if (consumable_data_length) {
@@ -458,6 +507,21 @@ int __wrap_accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 
 				/* Here we need to create a socket FD and return */
 				init_fd(fd, FD_TYPE_SOCKET, (struct file *)sf);
+
+
+
+
+				/* We need to provide an addr */
+				struct sockaddr_in sockaddr = {};
+				sockaddr.sin_family = AF_INET;
+
+				if (addr) {
+					memcpy(addr, &sockaddr, sizeof(sockaddr));
+				}
+
+				/* Copy this to socket */
+				memcpy(&sf->addr, &sockaddr, sizeof(sockaddr));
+				sf->len = sizeof(sockaddr);
 
 			}
 
@@ -567,7 +631,13 @@ int __wrap_eventfd() {
 // timerfd_settime
 
 /* File descriptors exist in a shared dimension, and has to know its type */
+extern int __real_close(int fd);
 int __wrap_close(int fd) {
+
+	if (fd < RESERVED_SYSTEM_FDS) {
+		return __real_close(fd);
+	}
+
 	struct file *f = map_fd(fd);
 
 	if (!f) {
