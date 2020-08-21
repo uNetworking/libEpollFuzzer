@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdarg.h>
+#include <threads.h>
 
 #include <sys/timerfd.h>
 #include <sys/epoll.h>
@@ -14,6 +15,12 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <errno.h>
+
+// todo: add connect, donät pass invalid-FD to real syscalls
+// getaddrinfo should return inet6 somtimes and sometimes wrong family (done)
+// accept4 should produce inet6 sometimes (done)
+// socket syscall should fail with given invalid family (done)
+// listen syscall should fail sometimes (done)
 
 /* Currently read, close, fcntl are wrapped to real syscalls */
 
@@ -64,6 +71,17 @@ int consumable_data_length;
 void set_consumable_data(const unsigned char *new_data, int new_length) {
 	consumable_data = (unsigned char *) new_data;
 	consumable_data_length = new_length;
+}
+
+/* Returns non-null on error */
+int consume_byte(unsigned char *b) {
+	if (consumable_data_length) {
+		*b = consumable_data[0];
+		consumable_data++;
+		consumable_data_length--;
+		return 0;
+	}
+	return -1;
 }
 
 /* Keeping track of FDs */
@@ -425,23 +443,42 @@ int __wrap_getaddrinfo(const char *node, const char *service,
                        struct addrinfo **res) {
 	//printf("Wrapped getaddrinfo\n");
 
+	struct addrinfo default_hints = {};
 
-	// we need to return an addrinfo with family AF_INET6
+	if (!hints) {
+		hints = &default_hints;
+	}
 
-	static struct addrinfo ai;
+	unsigned char b;
+	if (consume_byte(&b)) {
+		return -1;
+	}
 
-	//ai.ai_next = NULL;
-
-	ai.ai_family = AF_INET;//hints->ai_family;
+	/* This one should be thread_local */
+	static thread_local struct addrinfo ai;
 	ai.ai_flags = hints->ai_flags;
 	ai.ai_socktype = hints->ai_socktype;
 	ai.ai_protocol = hints->ai_protocol;
 
-	ai.ai_addrlen = 4; // fel
+	if (b > 127) {
+		ai.ai_family = AF_INET;//hints->ai_family;
+	} else {
+		ai.ai_family = AF_INET6;//hints->ai_family;
+	}
+
+	/* This one is for generating the wrong family (maybe invalid?) */
+	if (b == 0) {
+		ai.ai_family = hints->ai_family;
+	}
+
 	ai.ai_next = NULL;
 	ai.ai_canonname = NULL; // fel
 
+	// these should depend on inet6 or inet */
+	ai.ai_addrlen = 4; // fel
 	ai.ai_addr = NULL; // ska peka på en sockaddr!
+
+	// we need to return an addrinfo with family AF_INET6
 
 	*res = &ai;
 	return 0;
@@ -477,74 +514,72 @@ int __wrap_getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 int __wrap_accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 	/* We must end with -1 since we are called in a loop */
 
-#ifdef PRINTF_DEBUG
-	if (consumable_data_length < 0) {
-		printf("ACCEPT4 FEL PÅ CONSUMABLE LENGTH!\n");
-		exit(33);
+	unsigned char b;
+	if (consume_byte(&b)) {
+		return -1;
 	}
-#endif
 
-	/* Read one byte, if it is null then we have a new socket */
-	if (consumable_data_length) {
+	/* This rule might change, anything below 10 is accepted */
+	if (b < 10) {
 
-		int byte = consumable_data[0];
+		int fd = allocate_fd();
 
-		/* Consume the fuzz byte */
-		consumable_data_length--;
-		consumable_data++;
+		if (fd != -1) {
 
-		/* Okay, so do we have a new connection? */
-		if (!byte) {
+			/* Allocate the file */
+			struct socket_file *sf = (struct socket_file *) malloc(sizeof(struct socket_file));
 
-			int fd = allocate_fd();
+			/* Init the file */
 
-			if (fd != -1) {
+			/* Here we need to create a socket FD and return */
+			init_fd(fd, FD_TYPE_SOCKET, (struct file *)sf);
 
-				/* Allocate the file */
-				struct socket_file *sf = (struct socket_file *) malloc(sizeof(struct socket_file));
-
-				/* Init the file */
-
-				/* Here we need to create a socket FD and return */
-				init_fd(fd, FD_TYPE_SOCKET, (struct file *)sf);
-
-
-
-
-				/* We need to provide an addr */
-				struct sockaddr_in sockaddr = {};
-				sockaddr.sin_family = AF_INET;
-
-				if (addr) {
-					memcpy(addr, &sockaddr, sizeof(sockaddr));
-				}
-
-				/* Copy this to socket */
-				memcpy(&sf->addr, &sockaddr, sizeof(sockaddr));
-				sf->len = sizeof(sockaddr);
-
+			/* We need to provide an addr */
+			socklen_t len = 4;
+			struct sockaddr_in6 sockaddr = {};
+			sockaddr.sin6_family = AF_INET;
+			if (b < 5) {
+				sockaddr.sin6_family = AF_INET6;
+				len = 16;
 			}
 
-#ifdef PRINTF_DEBUG
-			printf("accept4 returning fd: %d\n", fd);
-#endif
-			return fd;
-		} else {
-			return -1;
+			if (addr) {
+				memcpy(addr, &sockaddr.sin6_addr, len);
+			}
+
+			/* Copy this to socket */
+			memcpy(&sf->addr, &sockaddr.sin6_addr, len);
+			sf->len = len;
 		}
+
+		return fd;
 	}
 
-	/* If we have no consumable data we cannot return a socket */
 	return -1;
 }
 
 int __wrap_listen() {
-	//printf("Wrapped listen\n");
-	return 0;
+	/* Listen consumes one byte and fails on -1 */
+	unsigned char b;
+	if (consume_byte(&b)) {
+		return -1;
+	}
+
+	if (b) {
+		return 0;
+	}
+
+	return -1;
 }
 
 /* This one is similar to accept4 and has to return a valid FD of type socket */
-int __wrap_socket() {
+int __wrap_socket(int domain, int type, int protocol) {
+
+	/* Only accept valid families */
+	if (domain != AF_INET && domain != AF_INET6) {
+		return -1;
+	}
+
 	int fd = allocate_fd();
 
 	if (fd != -1) {
