@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdarg.h>
-#include <threads.h>
+//#include <threads.h>
 
 #include <sys/timerfd.h>
 #include <sys/epoll.h>
@@ -455,7 +455,7 @@ int __wrap_getaddrinfo(const char *node, const char *service,
 	}
 
 	/* This one should be thread_local */
-	static thread_local struct addrinfo ai;
+	static /*thread_local*/ struct addrinfo ai;
 	ai.ai_flags = hints->ai_flags;
 	ai.ai_socktype = hints->ai_socktype;
 	ai.ai_protocol = hints->ai_protocol;
