@@ -319,7 +319,12 @@ struct socket_file {
 	struct file base;
 
 	/* We store socket addresses created in accept4 */
-	sockaddr_in6 addr;
+	union {
+		struct sockaddr_in6 in6;
+		struct sockaddr_in in;
+	} addr;
+
+	/* The size of sockaddr_in6 or sockaddr_in as a whole */
 	socklen_t len;
 };
 
@@ -496,6 +501,8 @@ int __wrap_getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 		return -1;
 	}
 
+	// todo: this could fail with -1 also (consume a byte)?
+
 	if (f->type == FD_TYPE_SOCKET) {
 
 		struct socket_file *sf = (struct socket_file *) f;
@@ -523,7 +530,6 @@ int __wrap_accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 	if (b < 10) {
 
 		int fd = allocate_fd();
-
 		if (fd != -1) {
 
 			/* Allocate the file */
@@ -535,21 +541,23 @@ int __wrap_accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 			init_fd(fd, FD_TYPE_SOCKET, (struct file *)sf);
 
 			/* We need to provide an addr */
-			socklen_t len = 4;
-			struct sockaddr_in6 sockaddr = {};
-			sockaddr.sin6_family = AF_INET;
+
+			/* Begin by setting it to an empty in6 address */
+			memset(&sf->addr, 0, sizeof(struct sockaddr_in6));
+			sf->len = sizeof(struct sockaddr_in6);
+			sf->addr.in6.sin6_family = AF_INET6;
+
+			/* Opt-in to ipv4 */
 			if (b < 5) {
-				sockaddr.sin6_family = AF_INET6;
-				len = 16;
+				memset(&sf->addr, 0, sizeof(struct sockaddr_in6));
+				sf->len = sizeof(struct sockaddr_in);
+				sf->addr.in.sin_family = AF_INET;
 			}
 
 			if (addr) {
-				memcpy(addr, &sockaddr.sin6_addr, len);
+				/* Copy from socket to addr */
+				memcpy(addr, &sf->addr, sf->len);
 			}
-
-			/* Copy this to socket */
-			memcpy(&sf->addr, &sockaddr.sin6_addr, len);
-			sf->len = len;
 		}
 
 		return fd;
